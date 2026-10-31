@@ -1,0 +1,28 @@
+services:
+  clef:
+    image: vllm/vllm-openai:latest
+    container_name: clef
+    volumes:
+      - ${HOME}/.cache/huggingface:/root/.cache/huggingface
+      - ./serve_clef.py:/serve_clef.py:ro
+    environment:
+      CLEF_MODEL: simonlehmann/clef-NVFP4
+      HF_HOME: /root/.cache/huggingface
+      HF_HUB_OFFLINE: "1"
+      CLEF_GPU_MEM: "0.30"
+      CLEF_MAX_TOKENS: "16384"
+      CLEF_API_KEYS: ${CLEF_API_KEY:?set CLEF_API_KEY in .env}
+      NVIDIA_VISIBLE_DEVICES: "1"
+      VLLM_LOGGING_LEVEL: INFO
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["1"]
+              capabilities: [gpu]
+    ports:
+      - "127.0.0.1:8080:8080"
+    shm_size: 8gb
+    restart: unless-stopped
+    command: python /serve_clef.py
