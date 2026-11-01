@@ -1,8 +1,9 @@
-"""The five inbox categories, their criteria, and the Gmail labels they map to."""
+"""The inbox categories, their criteria, and the Gmail labels they map to."""
 
 from __future__ import annotations
 
 OTP = "OTP"
+SECURITY = "Security Notices"
 UNSURE = "Unsure"
 
 CATEGORY_CRITERIA: dict[str, str] = {
@@ -19,8 +20,13 @@ CATEGORY_CRITERIA: dict[str, str] = {
     ),
     "Transaction": (
         "A receipt, invoice, order or booking confirmation, shipping status, payment or "
-        "refund notice, account or security alert, or another automated notification about "
-        "an event that already happened to the recipient or to something they own."
+        "refund notice, or another automated notification about an event that already "
+        "happened to the recipient or to something they own."
+    ),
+    SECURITY: (
+        "Notice of something happening to the recipient's account right now: new sign-in "
+        "or device alert, password or recovery change, two-factor toggled on or off. Worth "
+        "checking soon, stale afterward — unlike a receipt, it records no purchase."
     ),
     "Updates": (
         "Informational content the recipient is subscribed to but did not personally "
@@ -40,6 +46,7 @@ DEFAULT_LABEL_NAMES: dict[str, str] = {
     OTP: "Categories/OTP",
     "Primary": "Categories/Primary",
     "Transaction": "Categories/Transactions",
+    SECURITY: "Categories/SecurityNotices",
     "Updates": "Categories/Updates",
     "Promotional": "Categories/Promotions",
     UNSURE: "Categories/Unsure",

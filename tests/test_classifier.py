@@ -100,6 +100,7 @@ def test_close_is_safe_without_transport() -> None:
         ("Google", "Code is 8821", "code is 8821", "OTP"),
         ("Amazon", "Your receipt #111", "Thanks for your purchase", "Transaction"),
         ("Delta", "Booking confirmation 8FX2Q", "your itinerary", "Transaction"),
+        ("Dropbox", "New sign in detected", "A new device signed in.", "Security Notices"),
         ("Acme", "50% off everything this week", "shop now", "Promotional"),
         ("Fancy", "Our March newsletter", "read this", "Updates"),
         ("Ada", "Lunch Friday?", "are you free", "Primary"),

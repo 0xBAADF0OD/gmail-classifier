@@ -9,7 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
-from .categories import CATEGORY_CRITERIA, OTP
+from .categories import CATEGORY_CRITERIA, OTP, SECURITY
 from .config import Config
 from .state import EmailText
 
@@ -17,7 +17,7 @@ SYSTEM_PROMPT = (
     "Sort the email into exactly one inbox category.\n"
     + "\n".join(f"- {name}: {text}" for name, text in CATEGORY_CRITERIA.items())
     + "\nJudge the whole message. Reply with this JSON object only:\n"
-    '{"category": "<one of the five names>", "confidence": <0.0 to 1.0>}\n'
+    '{"category": "<one of the names listed above>", "confidence": <0.0 to 1.0>}\n'
     "Lower the confidence when the message fits several categories."
 )
 
@@ -153,7 +153,11 @@ class RulesClassifier:
             r"\b(receipt|invoice|order (confirmation|update|shipped)|shipping|delivered)",
         ),
         ("Transaction", r"\b(payment (confirmed|received|failed)|booking confirmation|itinerary)"),
-        ("Transaction", r"\b(security alert|password (changed|reset)|refund (processed|issued))"),
+        (
+            SECURITY,
+            r"\b(security alert|password (changed|reset)|new sign[- ]?in|signed in)",
+        ),
+        ("Transaction", r"\brefund (processed|issued)"),
         (
             "Promotional",
             r"(\d{1,3}%\s*off|\bdiscount\b|\bcoupon\b|limited time|flash sale|\bsale\b)",
