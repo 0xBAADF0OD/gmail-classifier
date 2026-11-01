@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 import quopri
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -225,13 +225,17 @@ def apply_label(
     message_id: str,
     label_id: str,
     *,
-    user_id: str = "me",
+    replace: Sequence[str] = (),
     keep_inbox: bool = False,
+    user_id: str = "me",
 ) -> None:
-    """Add the category label; leave the inbox (out of the intake queue) unless keep_inbox."""
-    body: dict[str, Any] = {"addLabelIds": [label_id]}
+    """Add the category label, drop stale managed labels, leave inbox unless keep_inbox."""
+    remove: list[str] = list(replace)
     if not keep_inbox:
-        body["removeLabelIds"] = ["INBOX"]
+        remove.append("INBOX")
+    body: dict[str, Any] = {"addLabelIds": [label_id]}
+    if remove:
+        body["removeLabelIds"] = remove
     service.users().messages().modify(
         userId=user_id,
         id=message_id,

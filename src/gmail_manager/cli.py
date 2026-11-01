@@ -34,6 +34,7 @@ CATEGORY_COLORS = {
     "Primary": "white",
     "Transaction": "green",
     "Updates": "blue",
+    "Security Notices": "yellow",
     "Promotional": "magenta",
 }
 
@@ -139,6 +140,7 @@ def _finalize(
     *,
     service: Any,
     label_ids: dict[str, str],
+    managed_ids: set[str],
     min_confidence: float,
     user_id: str,
     dry_run: bool,
@@ -160,8 +162,11 @@ def _finalize(
         result.outcome = "already-labelled"
         result.tags.append("label already present")
         return result
+    replace = [lid for lid in result.email.label_ids if lid in managed_ids and lid != label_name]
     if dry_run:
         result.detail = f"would apply {label_name}"
+        if replace:
+            result.detail += f" replacing {len(replace)} old label(s)"
         if not low:
             result.outcome = "would-label"
         return result
@@ -170,6 +175,7 @@ def _finalize(
             service,
             result.email.message_id,
             label_name,
+            replace=replace,
             user_id=user_id,
             keep_inbox=decision.category == "Primary" and not low,
         )
@@ -185,7 +191,7 @@ def _finalize(
 
 @click.group(context_settings=CONTEXT_SETTINGS)
 def main() -> None:
-    """Classify Gmail inbox mail into five categories and apply existing Gmail labels."""
+    """Classify Gmail inbox mail into the inbox categories and apply existing Gmail labels."""
 
 
 @main.command()
@@ -214,7 +220,7 @@ def auth(force: bool, check: bool) -> None:
     "--label", "label_overrides", multiple=True, help="Override the label for a category."
 )
 def labels(label_overrides: tuple[str, ...]) -> None:
-    """Show which existing Gmail labels the five categories map to."""
+    """Show which existing Gmail labels the inbox categories map to."""
     config = Config.from_env()
     try:
         service = get_service(config.credentials_file, config.token_file)
@@ -312,6 +318,7 @@ def classify(
         raise click.ClickException(str(exc)) from None
 
     label_ids, missing = resolve_label_ids(service, wanted)
+    managed_ids = set(label_ids.values())
     for item in missing:
         click.secho(f"warning: no Gmail label for {item} - reporting only", fg="yellow", err=True)
 
@@ -347,6 +354,7 @@ def classify(
             result,
             service=service,
             label_ids=label_ids,
+            managed_ids=managed_ids,
             min_confidence=confidence,
             user_id=config.user_id,
             dry_run=dry_run,

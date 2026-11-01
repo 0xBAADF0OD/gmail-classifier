@@ -1,7 +1,8 @@
 # gmail-manager
 
 A CLI that reads your Gmail inbox, classifies each message into **OTP / Primary / Transaction /
-Updates / Promotional** with an LLM, and applies the matching **existing** Gmail label.
+Security Notices / Updates / Promotional** with an LLM, and applies the matching **existing** Gmail
+label.
 It never creates labels and never touches Gmail's own category labels. Messages answered with a
 confidence below the threshold go to `Categories/Unsure`.
 
@@ -12,8 +13,8 @@ Two classifier backends, one interface:
 | `llm` (default) | any OpenAI-compatible chat-completions endpoint (your LiteLLM proxy / `pegasus-lite`) | forced JSON: `{"category": ..., "confidence": ...}` |
 | `rules` | keyword heuristics, no API key or network | fixed 0.4 confidence |
 
-Every classification is one API call asking a single question: which of the five categories best
-describes the message. The answer is `category + confidence`, nothing else.
+Every classification is one API call asking a single question: which category best describes the
+message. The answer is `category + confidence`, nothing else.
 
 ## 1. Install
 
@@ -39,7 +40,7 @@ Scope requested: `https://www.googleapis.com/auth/gmail.modify`.
 
 The tool only applies labels that **already exist** in Gmail, matched by name (case-insensitive).
 Create them in Gmail first: `Categories/OTP`, `Categories/Primary`, `Categories/Transactions`,
-`Categories/Updates`, `Categories/Promotions`, `Categories/Unsure`.
+`Categories/SecurityNotices`, `Categories/Updates`, `Categories/Promotions`, `Categories/Unsure`.
 
 ```bash
 uv run gmail-manager labels                      # show the mapping and what's missing
@@ -75,7 +76,8 @@ classifying 12 messages with llm…
 Intake reads messages that carry nothing beyond `INBOX`/`UNREAD`; anything with another label is
 treated as already triaged and skipped unless you pass `--reclassify`. Applying a label also removes
 `INBOX` so the message leaves the intake queue — except `Categories/Primary`, whose messages stay
-in the inbox.
+in the inbox. With `--reclassify`, a fresh decision replaces the previous managed label
+(`Categories/Transactions` → `Categories/SecurityNotices`) instead of stacking on top of it.
 
 Set `GMAIL_MANAGER_DEBUG=1` to watch progress while a run is in flight: each message prints a
 `[i/n] CATEGORY c=0.xx sender subject` line the moment it is classified, and the end-of-run table

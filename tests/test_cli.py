@@ -138,6 +138,28 @@ def test_classify_reclassifies_on_request(monkeypatch: pytest.MonkeyPatch, clean
     assert "already-labelled=1" in result.output
 
 
+def test_reclassify_replaces_previous_managed_label(
+    monkeypatch: pytest.MonkeyPatch, clean_env: None
+) -> None:
+    fake = FakeGmail(
+        {
+            "m_old": raw_message(
+                "m_old",
+                sender="Notifapp",
+                subject="Bo commented on your post",
+                body="reply to comment",
+                label_ids=["INBOX", "LL_TRANSACTION"],
+            )
+        }
+    )
+    use(monkeypatch, fake)
+    result = run("classify", "--backend", "rules", "--confidence", "0.2", "--reclassify")
+    assert result.exit_code == 0, result.output
+    body = fake.modify_calls[0]["body"]
+    assert body["addLabelIds"] == ["LL_UPDATES"]
+    assert body["removeLabelIds"] == ["LL_TRANSACTION", "INBOX"]
+
+
 def test_classify_honours_label_remap_and_warns_when_absent(
     service: FakeGmail, clean_env: None
 ) -> None:
@@ -238,7 +260,7 @@ def test_debug_mode_streams_progress_lines(
 
 def test_labels_command_maps_categories(service: FakeGmail, clean_env: None) -> None:
     result = run("labels")
-    for category in ("OTP", "Primary", "Transaction", "Updates", "Promotional"):
+    for category in ("OTP", "Primary", "Transaction", "Security Notices", "Updates", "Promotional"):
         assert category in result.output
 
 
