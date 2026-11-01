@@ -1,8 +1,9 @@
-"""The five inbox categories and the wording used to ask about them."""
+"""The five inbox categories, their criteria, and the Gmail labels they map to."""
 
 from __future__ import annotations
 
 OTP = "OTP"
+UNSURE = "Unsure"
 
 CATEGORY_CRITERIA: dict[str, str] = {
     OTP: (
@@ -35,16 +36,11 @@ CATEGORY_CRITERIA: dict[str, str] = {
 
 CATEGORIES: tuple[str, ...] = tuple(CATEGORY_CRITERIA)
 
-CLASSIFY_INSTRUCTIONS = (
-    "Which single category best describes this email? Judge the message as a whole, not one "
-    "sentence. Break ties in this order: choose OTP when a one-time code or magic sign-in link "
-    "is the point of the message; choose Transaction when the message reports the outcome of "
-    "something the recipient did, bought, or that happened to their account; choose Primary only "
-    "when a specific person wrote it to this recipient personally; choose Promotional when selling "
-    "something is the main purpose; otherwise choose Updates."
-)
-
-OTP_NOUL_INSTRUCTIONS = (
-    "The main purpose of this email is to deliver a one-time sign-in, verification, 2FA, or "
-    "recovery code (or magic sign-in link) that the recipient must use immediately."
-)
+DEFAULT_LABEL_NAMES: dict[str, str] = {
+    OTP: "Categories/OTP",
+    "Primary": "Categories/Primary",
+    "Transaction": "Categories/Transactions",
+    "Updates": "Categories/Updates",
+    "Promotional": "Categories/Promotions",
+    UNSURE: "Categories/Unsure",
+}

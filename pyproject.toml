@@ -9,8 +9,6 @@ dependencies = [
     "google-auth-httplib2>=0.2",
     "google-auth-oauthlib>=1.2",
     "python-dotenv>=1.0",
-    "system-one-adapter[openai]>=0.2",
-    "typesafe-sdk>=0.7",
 ]
 
 [dependency-groups]

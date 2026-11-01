@@ -116,32 +116,46 @@ def header_values(payload: Mapping[str, Any]) -> dict[str, str]:
     return out
 
 
+PAGE_SIZE = 250
+MAX_REPEATS = 3
+
+
 def list_messages(
     service: Resource,
     *,
     query: str,
     user_id: str = "me",
-    max_results: int = 50,
+    max_results: int | None = None,
 ) -> Iterator[dict[str, Any]]:
+    """Yield unique inbox messages, paging until exhausted (max_results=None) or capped."""
     page_token: str | None = None
     fetched = 0
-    while fetched < max_results:
+    seen: dict[str, int] = {}
+    while max_results is None or fetched < max_results:
+        page_size = PAGE_SIZE if max_results is None else min(PAGE_SIZE, max_results - fetched)
         request = (
             service.users()
             .messages()
             .list(
                 userId=user_id,
                 q=query,
-                maxResults=min(250, max_results - fetched),
+                maxResults=page_size,
                 pageToken=page_token,
             )
         )
         response = request.execute()
         messages = response.get("messages") or []
         for message in messages:
+            message_id = str(message.get("id", ""))
+            occurrences = seen.get(message_id, 0) + 1
+            seen[message_id] = occurrences
+            if occurrences > MAX_REPEATS:
+                return
+            if occurrences > 1:
+                continue
             yield message
             fetched += 1
-            if fetched >= max_results:
+            if max_results is not None and fetched >= max_results:
                 return
         page_token = response.get("nextPageToken")
         if not page_token or not messages:
@@ -206,9 +220,20 @@ def resolve_label_ids(
     return resolved, missing
 
 
-def apply_label(service: Resource, message_id: str, label_id: str, *, user_id: str = "me") -> None:
+def apply_label(
+    service: Resource,
+    message_id: str,
+    label_id: str,
+    *,
+    user_id: str = "me",
+    keep_inbox: bool = False,
+) -> None:
+    """Add the category label; leave the inbox (out of the intake queue) unless keep_inbox."""
+    body: dict[str, Any] = {"addLabelIds": [label_id]}
+    if not keep_inbox:
+        body["removeLabelIds"] = ["INBOX"]
     service.users().messages().modify(
         userId=user_id,
         id=message_id,
-        body={"addLabelIds": [label_id]},
+        body=body,
     ).execute()

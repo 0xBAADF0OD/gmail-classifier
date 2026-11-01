@@ -5,6 +5,8 @@ from typing import Any
 
 import pytest
 
+from gmail_manager.categories import DEFAULT_LABEL_NAMES
+
 
 def b64(value: str) -> str:
     return base64.urlsafe_b64encode(value.encode()).decode().rstrip("=")
@@ -52,8 +54,8 @@ def default_labels() -> list[dict[str, Any]]:
         {"id": "CATEGORY_PROMOTIONS", "name": "CATEGORY_PROMOTIONS", "type": "system"},
     ]
     labels.extend(
-        {"id": f"LL_{name.upper()}", "name": name, "type": "user"}
-        for name in ("OTP", "Primary", "Transaction", "Updates", "Promotional")
+        {"id": f"LL_{category.upper()}", "name": DEFAULT_LABEL_NAMES[category], "type": "user"}
+        for category in DEFAULT_LABEL_NAMES
     )
     return labels
 
@@ -137,12 +139,11 @@ class FakeGmail:
 @pytest.fixture
 def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for key in (
-        "TYPESAFE_API_KEY",
-        "TYPESAFE_MODEL",
         "LLM_API_KEY",
         "LLM_API_BASE",
         "LLM_MODEL",
         "CLASSIFIER_BACKEND",
+        "GMAIL_MANAGER_DEBUG",
         "GMAIL_USER_ID",
         "GMAIL_CREDENTIALS_FILE",
         "GMAIL_TOKEN_FILE",

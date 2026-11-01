@@ -4,7 +4,7 @@ from typing import Any
 
 from conftest import FakeGmail, b64, default_labels, make_payload, raw_message
 from gmail_manager import gmail
-from gmail_manager.categories import CATEGORIES
+from gmail_manager.categories import DEFAULT_LABEL_NAMES
 
 
 def test_extract_body_prefers_plain_over_html() -> None:
@@ -87,6 +87,24 @@ def test_list_messages_paginates_and_respects_max() -> None:
     assert service.list_calls[1]["pageToken"] == "p2"
 
 
+def test_list_messages_unlimited_drains_all_pages() -> None:
+    pages = [
+        {"messages": [{"id": "a"}, {"id": "b"}], "nextPageToken": "p2"},
+        {"messages": [{"id": "c"}]},
+    ]
+    service = FakeGmail(pages=pages)
+    ids = [message["id"] for message in gmail.list_messages(service, query="in:inbox")]
+    assert ids == ["a", "b", "c"]
+    assert len(service.list_calls) == 2
+
+
+def test_list_messages_stops_when_pages_cycle() -> None:
+    service = FakeGmail(pages=[{"messages": [{"id": "a"}, {"id": "b"}], "nextPageToken": "t"}])
+    ids = [message["id"] for message in gmail.list_messages(service, query="in:inbox")]
+    assert ids == ["a", "b"]
+    assert len(service.list_calls) == gmail.MAX_REPEATS + 1
+
+
 def test_fetch_email_reads_headers_body_and_labels() -> None:
     raw = raw_message(
         "m1",
@@ -113,10 +131,8 @@ def test_fetch_email_without_body_uses_metadata_format() -> None:
 
 def test_resolve_label_ids_matches_case_insensitively() -> None:
     service = FakeGmail(labels=default_labels())
-    resolved, missing = gmail.resolve_label_ids(
-        service, {category: category for category in CATEGORIES}
-    )
-    assert set(resolved) == set(CATEGORIES)
+    resolved, missing = gmail.resolve_label_ids(service, DEFAULT_LABEL_NAMES)
+    assert set(resolved) == set(DEFAULT_LABEL_NAMES)
     assert missing == []
 
 
@@ -135,4 +151,10 @@ def test_apply_label_calls_modify() -> None:
     gmail.apply_label(service, "m3", "LL_OTP")
     call: dict[str, Any] = service.modify_calls[0]
     assert call["id"] == "m3"
-    assert call["body"] == {"addLabelIds": ["LL_OTP"]}
+    assert call["body"] == {"addLabelIds": ["LL_OTP"], "removeLabelIds": ["INBOX"]}
+
+
+def test_apply_label_keep_inbox_preserves_inbox() -> None:
+    service = FakeGmail({"m4": raw_message("m4", sender="a", subject="b", body="c")})
+    gmail.apply_label(service, "m4", "LL_PRIMARY", keep_inbox=True)
+    assert service.modify_calls[0]["body"] == {"addLabelIds": ["LL_PRIMARY"]}

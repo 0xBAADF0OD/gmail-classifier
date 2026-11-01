@@ -11,7 +11,7 @@ from typing import Any
 
 import click
 
-from .categories import CATEGORIES
+from .categories import CATEGORIES, DEFAULT_LABEL_NAMES, UNSURE
 from .classifier import Classifier, Decision, make_classifier
 from .config import BACKENDS, Config
 from .gmail import (
@@ -26,6 +26,8 @@ from .gmail import (
 from .state import EmailText
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
+
+INTAKE_LABELS = frozenset({"INBOX", "UNREAD"})
 
 CATEGORY_COLORS = {
     "OTP": "cyan",
@@ -47,18 +49,23 @@ class Result:
 
 
 def _parse_label_overrides(pairs: tuple[str, ...]) -> dict[str, str]:
-    wanted = {category: category for category in CATEGORIES}
-    lookup = {category.lower(): category for category in CATEGORIES}
+    wanted = dict(DEFAULT_LABEL_NAMES)
+    lookup = {category.lower(): category for category in DEFAULT_LABEL_NAMES}
     for pair in pairs:
         category, separator, label_name = pair.partition("=")
         key = lookup.get(category.strip().lower())
         if not separator or key is None or not label_name.strip():
             raise click.BadParameter(
-                f"--label expects CATEGORY=LabelName with CATEGORY one of {', '.join(CATEGORIES)}",
+                "--label expects CATEGORY=LabelName with CATEGORY one of "
+                + ", ".join(DEFAULT_LABEL_NAMES),
                 param_hint="--label",
             )
         wanted[key] = label_name.strip()
     return wanted
+
+
+def _fresh_for_intake(email: EmailText) -> bool:
+    return set(email.label_ids) <= INTAKE_LABELS
 
 
 def _echo_result(result: Result) -> None:
@@ -73,7 +80,7 @@ def _echo_result(result: Result) -> None:
     extra = " ".join(result.tags + ([result.detail] if result.detail else []))
     click.echo(
         click.style(f"  {decision.category.ljust(12)}", fg=color, bold=True)
-        + f" p={decision.category_probability:.2f} c={decision.confidence:.2f}"
+        + f" c={decision.confidence:.2f}"
         + f"  {email.sender[:26]:<26} {email.headline[:44]:<44}"
         + click.style(f" {extra}", dim=True)
     )
@@ -83,10 +90,27 @@ def _echo_result(result: Result) -> None:
         click.secho(f"              error: {result.error}", fg="red")
 
 
+def _echo_progress(position: int, total: int, result: Result) -> None:
+    email = result.email
+    if result.decision is None:
+        click.secho(
+            f"[{position}/{total}] ERROR {email.sender[:28]} {email.headline[:40]} {result.error}",
+            fg="red",
+        )
+        return
+    decision = result.decision
+    color = CATEGORY_COLORS.get(decision.category, "white")
+    click.echo(
+        click.style(f"[{position}/{total}] {decision.category.ljust(12)}", fg=color, bold=True)
+        + f" c={decision.confidence:.2f} {email.sender[:26]:<26} {email.headline[:40]}"
+    )
+
+
 def _classify_all(
-    classifier: Classifier, emails: Iterable[EmailText], workers: int
+    classifier: Classifier, emails: Iterable[EmailText], workers: int, *, debug: bool = False
 ) -> list[Result]:
     items = list(emails)
+    total = len(items)
 
     def run(email: EmailText) -> Result:
         try:
@@ -94,10 +118,20 @@ def _classify_all(
         except Exception as exc:
             return Result(email=email, outcome="error", error=f"{type(exc).__name__}: {exc}")
 
-    if workers <= 1 or len(items) <= 1:
-        return [run(email) for email in items]
+    results: list[Result] = []
+    if workers <= 1 or total <= 1:
+        for position, email in enumerate(items, start=1):
+            result = run(email)
+            results.append(result)
+            if debug:
+                _echo_progress(position, total, result)
+        return results
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        return list(pool.map(run, items))
+        for position, result in enumerate(pool.map(run, items), start=1):
+            results.append(result)
+            if debug:
+                _echo_progress(position, total, result)
+    return results
 
 
 def _finalize(
@@ -112,31 +146,40 @@ def _finalize(
     decision = result.decision
     if decision is None:
         return result
-    label_name = label_ids.get(decision.category)
-    if decision.confidence < min_confidence:
+    low = decision.confidence < min_confidence
+    label_name = label_ids.get(UNSURE if low else decision.category)
+    if low:
         result.outcome = "low-confidence"
         result.tags.append(f"conf<{min_confidence:g}")
-        return result
     if label_name is None:
-        result.outcome = "no-label"
         result.tags.append("no matching Gmail label")
+        if not low:
+            result.outcome = "no-label"
         return result
     if label_name in result.email.label_ids:
         result.outcome = "already-labelled"
         result.tags.append("label already present")
         return result
     if dry_run:
-        result.outcome = "would-label"
         result.detail = f"would apply {label_name}"
+        if not low:
+            result.outcome = "would-label"
         return result
     try:
-        apply_label(service, result.email.message_id, label_name, user_id=user_id)
+        apply_label(
+            service,
+            result.email.message_id,
+            label_name,
+            user_id=user_id,
+            keep_inbox=decision.category == "Primary" and not low,
+        )
     except Exception as exc:
         result.outcome = "failed"
         result.error = f"{type(exc).__name__}: {exc}"
         return result
-    result.outcome = "labelled"
     result.detail = f"applied {label_name}"
+    if not low:
+        result.outcome = "labelled"
     return result
 
 
@@ -182,7 +225,7 @@ def labels(label_overrides: tuple[str, ...]) -> None:
     label_ids, missing = resolve_label_ids(service, wanted)
     by_id = {label["id"]: label for label in list_labels(service)}
     click.echo(f"{len(by_id)} labels in this mailbox\n")
-    for category in CATEGORIES:
+    for category in DEFAULT_LABEL_NAMES:
         name = wanted[category]
         if category in label_ids:
             click.secho(
@@ -209,23 +252,28 @@ def labels(label_overrides: tuple[str, ...]) -> None:
     "-q", "--query", default="in:inbox", show_default=True, help="Any Gmail search query."
 )
 @click.option(
-    "-n", "--max", "max_results", default=50, show_default=True, help="Max messages to process."
+    "-n",
+    "--max",
+    "max_results",
+    type=int,
+    default=None,
+    help="Max messages to process. Default: every untriaged inbox message.",
 )
 @click.option(
     "--backend",
     type=click.Choice(BACKENDS),
     default=None,
-    help="Default: jev, or llm without a key.",
+    help="Default: llm; rules needs no API key.",
 )
 @click.option(
-    "--confidence", default=0.55, show_default=True, help="Skip labelling below this confidence."
+    "--confidence",
+    default=0.66,
+    show_default=True,
+    help="Below this confidence, apply Categories/Unsure instead.",
 )
 @click.option("--workers", default=4, show_default=True, help="Concurrent classifier calls.")
 @click.option(
     "--body-chars", default=1500, show_default=True, help="Body characters sent to the model."
-)
-@click.option(
-    "--otp-override", default=0.9, show_default=True, help="Noul p(one-time code) that forces OTP."
 )
 @click.option("--no-bodies", is_flag=True, help="Classify from headers and snippet only (cheaper).")
 @click.option(
@@ -238,12 +286,11 @@ def labels(label_overrides: tuple[str, ...]) -> None:
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON lines instead of a table.")
 def classify(
     query: str,
-    max_results: int,
+    max_results: int | None,
     backend: str | None,
     confidence: float,
     workers: int,
     body_chars: int,
-    otp_override: float,
     no_bodies: bool,
     reclassify: bool,
     dry_run: bool,
@@ -267,10 +314,11 @@ def classify(
     label_ids, missing = resolve_label_ids(service, wanted)
     for item in missing:
         click.secho(f"warning: no Gmail label for {item} - reporting only", fg="yellow", err=True)
-    managed = set(label_ids.values())
 
     mode = "dry-run" if dry_run else "apply"
-    click.echo(f"backend={config.backend}  query={query!r}  max={max_results}  mode={mode}")
+    click.echo(
+        f"backend={config.backend}  query={query!r}  max={max_results or 'all'}  mode={mode}"
+    )
 
     emails: list[EmailText] = []
     skipped = 0
@@ -278,7 +326,7 @@ def classify(
         service, query=query, user_id=config.user_id, max_results=max_results
     ):
         email = fetch_email(service, message, user_id=config.user_id, include_body=not no_bodies)
-        if not reclassify and managed & set(email.label_ids):
+        if not reclassify and not _fresh_for_intake(email):
             skipped += 1
             continue
         emails.append(email)
@@ -288,9 +336,9 @@ def classify(
         return
 
     click.echo(f"classifying {len(emails)} messages with {config.backend}…\n")
-    classifier = make_classifier(config, max_body_chars=body_chars, otp_override=otp_override)
+    classifier = make_classifier(config, max_body_chars=body_chars)
     try:
-        results = _classify_all(classifier, emails, workers)
+        results = _classify_all(classifier, emails, workers, debug=config.debug)
     finally:
         classifier.close()
 
@@ -305,7 +353,7 @@ def classify(
         )
         if as_json:
             click.echo(json.dumps(_result_dict(result, wanted)))
-        else:
+        elif not config.debug:
             _echo_result(result)
 
     counts = Counter(result.outcome for result in results)
@@ -329,6 +377,10 @@ def classify(
 
 
 def _result_dict(result: Result, wanted: dict[str, str]) -> dict[str, Any]:
+    label_name: str | None = None
+    if result.decision is not None:
+        key = UNSURE if result.outcome == "low-confidence" else result.decision.category
+        label_name = wanted.get(key)
     payload: dict[str, Any] = {
         "messageId": result.email.message_id,
         "threadId": result.email.thread_id,
@@ -336,7 +388,7 @@ def _result_dict(result: Result, wanted: dict[str, str]) -> dict[str, Any]:
         "subject": result.email.subject,
         "outcome": result.outcome,
         "detail": result.detail or " ".join(result.tags),
-        "label": wanted.get(result.decision.category) if result.decision else None,
+        "label": label_name,
     }
     if result.decision is not None:
         payload["decision"] = result.decision.to_dict()

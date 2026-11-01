@@ -7,7 +7,7 @@ import pytest
 from click.testing import CliRunner
 
 from conftest import FakeGmail, raw_message
-from gmail_manager import cli
+from gmail_manager import cli, gmail
 from gmail_manager.cli import main
 
 MESSAGES = {
@@ -64,6 +64,7 @@ def test_classify_applies_existing_labels(service: FakeGmail, clean_env: None) -
         "m_receipt": ["LL_TRANSACTION"],
         "m_sale": ["LL_PROMOTIONAL"],
     }
+    assert all(call["body"].get("removeLabelIds") == ["INBOX"] for call in service.modify_calls)
 
 
 def test_classify_skips_already_labelled_messages(
@@ -84,6 +85,40 @@ def test_classify_skips_already_labelled_messages(
     result = run("classify", "--backend", "rules", "--confidence", "0.2")
     assert "nothing to classify (skipped 1 already labelled)" in result.output
     assert fake.modify_calls == []
+
+
+def test_intake_skips_emails_with_any_extra_label(
+    monkeypatch: pytest.MonkeyPatch, clean_env: None
+) -> None:
+    fake = FakeGmail(
+        {
+            "m_work": raw_message(
+                "m_work",
+                sender="Boss",
+                subject="Q3 numbers",
+                body="see attached",
+                label_ids=["INBOX", "Work"],
+            )
+        }
+    )
+    use(monkeypatch, fake)
+    result = run("classify", "--backend", "rules", "--confidence", "0.2")
+    assert "nothing to classify (skipped 1 already labelled)" in result.output
+    assert fake.modify_calls == []
+
+
+def test_primary_label_keeps_message_in_inbox(
+    monkeypatch: pytest.MonkeyPatch, clean_env: None
+) -> None:
+    fake = FakeGmail(
+        {"m_ada": raw_message("m_ada", sender="Ada", subject="Lunch Friday?", body="are you free")}
+    )
+    use(monkeypatch, fake)
+    result = run("classify", "--backend", "rules", "--confidence", "0.2")
+    assert result.exit_code == 0, result.output
+    body = fake.modify_calls[0]["body"]
+    assert body["addLabelIds"] == ["LL_PRIMARY"]
+    assert body.get("removeLabelIds") is None
 
 
 def test_classify_reclassifies_on_request(monkeypatch: pytest.MonkeyPatch, clean_env: None) -> None:
@@ -120,10 +155,12 @@ def test_classify_honours_label_remap_and_warns_when_absent(
     assert "OTP=1" in result.output
 
 
-def test_low_confidence_is_not_labelled(service: FakeGmail, clean_env: None) -> None:
+def test_low_confidence_falls_back_to_unsure(service: FakeGmail, clean_env: None) -> None:
     result = run("classify", "--backend", "rules", "--confidence", "0.9")
+    assert result.exit_code == 0, result.output
     assert "low-confidence=3" in result.output
-    assert service.modify_calls == []
+    applied = {call["id"]: call["body"]["addLabelIds"] for call in service.modify_calls}
+    assert applied == {key: ["LL_UNSURE"] for key in ("m_otp", "m_receipt", "m_sale")}
 
 
 def test_classify_json_output(service: FakeGmail, clean_env: None) -> None:
@@ -132,7 +169,7 @@ def test_classify_json_output(service: FakeGmail, clean_env: None) -> None:
     assert len(lines) == 3
     otp = next(line for line in lines if line["messageId"] == "m_otp")
     assert otp["decision"]["category"] == "OTP"
-    assert otp["label"] == "OTP"
+    assert otp["label"] == "Categories/OTP"
     assert otp["outcome"] == "would-label"
 
 
@@ -176,9 +213,27 @@ def test_classify_uses_gmail_query(monkeypatch: pytest.MonkeyPatch, clean_env: N
     assert fake.list_calls[0]["maxResults"] == 7
 
 
+def test_classify_defaults_to_the_whole_inbox(service: FakeGmail, clean_env: None) -> None:
+    result = run("classify", "--backend", "rules", "--dry-run", "--confidence", "0.2")
+    assert result.exit_code == 0, result.output
+    assert "max=all" in result.output
+    assert service.list_calls[0]["maxResults"] == gmail.PAGE_SIZE
+
+
 def test_classify_no_bodies_requests_metadata(service: FakeGmail, clean_env: None) -> None:
     run("classify", "--backend", "rules", "--dry-run", "--no-bodies", "--confidence", "0.2")
     assert service.get_calls[0]["format"] == "metadata"
+
+
+def test_debug_mode_streams_progress_lines(
+    service: FakeGmail, clean_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GMAIL_MANAGER_DEBUG", "1")
+    result = run("classify", "--backend", "rules", "--dry-run", "--confidence", "0.2")
+    assert result.exit_code == 0, result.output
+    assert "[1/3]" in result.output and "[3/3]" in result.output
+    assert "would apply LL_OTP" not in result.output
+    assert "OTP=1" in result.output
 
 
 def test_labels_command_maps_categories(service: FakeGmail, clean_env: None) -> None:

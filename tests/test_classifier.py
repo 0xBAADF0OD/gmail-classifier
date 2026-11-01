@@ -4,30 +4,8 @@ from typing import Any
 
 import pytest
 
-from gmail_manager.categories import CATEGORIES
-from gmail_manager.classifier import (
-    CATEGORY_QUESTION,
-    OTP_QUESTION,
-    RulesClassifier,
-    SystemOneClassifier,
-    decision_from_response,
-)
+from gmail_manager.classifier import LlmClassifier, RulesClassifier, parse_llm_answer
 from gmail_manager.state import EmailText
-
-
-class Answer:
-    def __init__(self, **kwargs: Any) -> None:
-        self.__dict__.update(kwargs)
-
-
-class Response:
-    def __init__(self, answers: dict[str, Any]) -> None:
-        self.answers = answers
-
-
-def choice(category: str, confidence: float = 0.8, **probabilities: float) -> Answer:
-    probs = probabilities or {name: (0.9 if name == category else 0.02) for name in CATEGORIES}
-    return Answer(type="choice", choice=category, confidence=confidence, probabilities=probs)
 
 
 def email(**kwargs: Any) -> EmailText:
@@ -40,116 +18,79 @@ def email(**kwargs: Any) -> EmailText:
     return EmailText(**{**defaults, **kwargs})
 
 
-def test_decision_reads_choice_and_noul() -> None:
-    response = Response(
-        {
-            CATEGORY_QUESTION: choice("Transaction", 0.77, Transaction=0.8),
-            OTP_QUESTION: Answer(noul=0.1),
-        }
+def test_parse_reads_category_and_confidence() -> None:
+    decision = parse_llm_answer(
+        '{"category": "Transaction", "confidence": 0.77}', model="pegasus-lite"
     )
-    decision = decision_from_response(response, backend="jev", model="jev-latest", otp_override=0.9)
     assert decision.category == "Transaction"
     assert decision.confidence == pytest.approx(0.77)
-    assert decision.category_probability == pytest.approx(0.8)
-    assert decision.note == ""
+    assert decision.backend == "llm"
+    assert decision.model == "pegasus-lite"
 
 
-def test_noul_overrides_a_non_otp_answer() -> None:
-    response = Response(
-        {
-            CATEGORY_QUESTION: choice("Transaction", 0.8, Transaction=0.8, OTP=0.1),
-            OTP_QUESTION: Answer(noul=0.95),
-        }
+def test_parse_tolerates_code_fences() -> None:
+    decision = parse_llm_answer(
+        '```json\n{"category": "Updates", "confidence": 0.6}\n```', model="m"
     )
-    decision = decision_from_response(response, backend="jev", model="jev", otp_override=0.9)
-    assert decision.category == "OTP"
-    assert "noul override" in decision.note
-
-
-def test_noul_below_threshold_leaves_answer_alone() -> None:
-    response = Response(
-        {CATEGORY_QUESTION: choice("Updates", 0.8, Updates=0.8), OTP_QUESTION: Answer(noul=0.4)}
-    )
-    decision = decision_from_response(response, backend="jev", model="jev", otp_override=0.9)
     assert decision.category == "Updates"
 
 
-def test_missing_answer_raises() -> None:
-    with pytest.raises(ValueError, match="category"):
-        decision_from_response(Response({}), backend="jev", model="jev", otp_override=0.9)
+def test_parse_clamps_confidence() -> None:
+    decision = parse_llm_answer('{"category": "OTP", "confidence": 1.5}', model="m")
+    assert decision.confidence == pytest.approx(1.0)
 
 
-def test_unknown_category_raises() -> None:
-    response = Response(
-        {CATEGORY_QUESTION: Answer(choice="Spam", confidence=1.0, probabilities={})}
-    )
+def test_parse_rejects_unknown_category() -> None:
     with pytest.raises(ValueError, match="unknown category"):
-        decision_from_response(response, backend="jev", model="jev", otp_override=0.9)
+        parse_llm_answer('{"category": "Spam", "confidence": 1}', model="m")
 
 
-class RecordingClient:
-    def __init__(self) -> None:
+def test_parse_rejects_non_json() -> None:
+    with pytest.raises(ValueError, match="not JSON"):
+        parse_llm_answer("Primary", model="m")
+
+
+class StubPost:
+    def __init__(self, content: str) -> None:
         self.calls: list[dict[str, Any]] = []
+        self.content = content
 
-    def system_one(self, **kwargs: Any) -> Response:
-        self.calls.append(kwargs)
-        return Response(
-            {
-                CATEGORY_QUESTION: choice("Primary", 0.9, Primary=0.9),
-                OTP_QUESTION: Answer(noul=0.0),
-            }
-        )
+    def __call__(
+        self, url: str, payload: dict[str, Any], *, api_key: str, timeout: int
+    ) -> dict[str, Any]:
+        self.calls.append({"url": url, "payload": payload, "api_key": api_key})
+        return {"choices": [{"message": {"content": self.content}}]}
 
 
-class FakeChoice:
-    def __init__(self, **kwargs: Any) -> None:
-        self.kwargs = kwargs
-
-
-class FakeNoul:
-    def __init__(self, **kwargs: Any) -> None:
-        self.kwargs = kwargs
-
-
-def classifier(client: Any, structured: bool) -> SystemOneClassifier:
-    return SystemOneClassifier(
-        name="fake",
-        client=client,
-        model="fake-model",
-        model_label="fake-model",
-        question_types=(FakeChoice, FakeNoul),
-        structured_state=structured,
+def classifier(post: Any) -> LlmClassifier:
+    return LlmClassifier(
+        api_base="http://proxy:4000/v1",
+        api_key="sk-test",
+        model="pegasus-lite",
+        post=post,
     )
 
 
-def test_jev_style_state_is_a_dict_and_asks_two_questions() -> None:
-    client = RecordingClient()
-    classifier(client, structured=True).classify(email())
-    call = client.calls[0]
-    assert call["model"] == "fake-model"
-    assert isinstance(call["state"], dict)
-    assert call["state"]["subject"] == "Your order has shipped"
-    assert set(call["questions"]) == {CATEGORY_QUESTION, OTP_QUESTION}
-    assert set(call["questions"][CATEGORY_QUESTION].kwargs["criteria"]) == set(CATEGORIES)
+def test_llm_asks_one_chat_completions_call_per_email() -> None:
+    post = StubPost('{"category": "Primary", "confidence": 0.9}')
+    decision = classifier(post).classify(email())
+    assert len(post.calls) == 1
+    call = post.calls[0]
+    assert call["url"] == "http://proxy:4000/v1/chat/completions"
+    assert call["api_key"] == "sk-test"
+    payload = call["payload"]
+    assert payload["model"] == "pegasus-lite"
+    assert payload["response_format"] == {"type": "json_object"}
+    system, user = payload["messages"]
+    assert system["role"] == "system"
+    assert "OTP" in system["content"] and "Promotional" in system["content"]
+    assert user["role"] == "user" and user["content"].startswith("Sender: Amazon")
+    assert decision.category == "Primary"
+    assert decision.confidence == pytest.approx(0.9)
 
 
-def test_llm_style_state_is_readable_text() -> None:
-    client = RecordingClient()
-    classifier(client, structured=False).classify(email())
-    state = client.calls[0]["state"]
-    assert isinstance(state, str)
-    assert state.startswith("Sender: Amazon")
-
-
-def test_close_is_forwarded_when_available() -> None:
-    closed: list[str] = []
-
-    class Closable(RecordingClient):
-        def close(self) -> None:
-            closed.append("closed")
-
-    classifier(Closable(), structured=True).close()
-    assert closed == ["closed"]
+def test_close_is_safe_without_transport() -> None:
+    classifier(StubPost('{"category": "Updates", "confidence": 0.5}')).close()
 
 
 @pytest.mark.parametrize(
@@ -170,3 +111,4 @@ def test_rules_backend_happy_path(sender: str, subject: str, body: str, expected
     decision = rules.classify(email(sender=sender, subject=subject, body=body))
     assert decision.category == expected
     assert decision.backend == "rules"
+    assert decision.confidence == pytest.approx(0.4)

@@ -11,22 +11,15 @@ def make(env: dict[str, str], backend: str | None = None) -> Config:
     return Config.from_env(backend, dotenv=False, env={**BASE, **env})
 
 
-def test_jev_without_key_falls_back_to_llm() -> None:
-    cfg = make({"TYPESAFE_API_KEY": ""})
+def test_llm_is_the_default_backend() -> None:
+    cfg = make({"LLM_API_KEY": "sk-ab12cd34"})
     assert cfg.backend == "llm"
-    assert any("TYPESAFE_API_KEY is empty" in note for note in cfg.notes)
-
-
-def test_jev_used_when_key_present() -> None:
-    cfg = make({"TYPESAFE_API_KEY": "tsK_live", "TYPESAFE_MODEL": "jev-1.13.0"})
-    assert cfg.backend == "jev"
-    assert cfg.typesafe_model == "jev-1.13.0"
     assert cfg.notes == ()
 
 
-def test_explicit_jev_without_key_raises() -> None:
-    with pytest.raises(ValueError, match="TYPESAFE_API_KEY"):
-        make({"TYPESAFE_API_KEY": ""}, backend="jev")
+def test_rules_backend_selectable() -> None:
+    cfg = make({"CLASSIFIER_BACKEND": "rules"})
+    assert cfg.backend == "rules"
 
 
 def test_placeholder_llm_key_warns() -> None:
@@ -35,9 +28,9 @@ def test_placeholder_llm_key_warns() -> None:
     assert any("placeholder" in note for note in cfg.notes)
 
 
-def test_real_llm_key_does_not_warn() -> None:
-    cfg = make({"LLM_API_KEY": "sk-ab12cd34"}, backend="llm")
-    assert cfg.notes == ()
+def test_missing_llm_key_warns() -> None:
+    cfg = make({})
+    assert any("LLM_API_KEY looks like a placeholder" in note for note in cfg.notes)
 
 
 def test_unknown_backend_raises() -> None:
@@ -45,8 +38,20 @@ def test_unknown_backend_raises() -> None:
         make({}, backend="crystal-ball")
 
 
+def test_explicit_unknown_backend_raises() -> None:
+    with pytest.raises(ValueError, match="unknown backend"):
+        make({"CLASSIFIER_BACKEND": "crystal-ball"})
+
+
+def test_debug_flag_reads_env() -> None:
+    assert make({"GMAIL_MANAGER_DEBUG": "1"}).debug is True
+    assert make({"GMAIL_MANAGER_DEBUG": "off"}).debug is False
+    assert make({}).debug is False
+
+
 def test_paths_and_model_defaults() -> None:
     cfg = make({})
     assert str(cfg.credentials_file) == "client.json"
     assert cfg.user_id == "me"
     assert cfg.llm_model == "pegasus-lite"
+    assert cfg.llm_api_base == "http://localhost:4000/v1"
